@@ -1,0 +1,8 @@
+[phases.setup]
+nixPkgs = ["php82", "php82Extensions.pdo_sqlite", "php82Extensions.openssl", "php82Extensions.curl"]
+
+[phases.build]
+cmds = ["echo 'Building ScholarshipHive PMS Portal...'"]
+
+[start]
+cmd = "php -S 0.0.0.0:${PORT:-8080} -t portal portal/router.php"
