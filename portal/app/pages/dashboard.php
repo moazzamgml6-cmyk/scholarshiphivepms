@@ -17,11 +17,44 @@ $refused = count(array_filter($rows, fn($r) => $r['visa'] === 'Refused'));
 $due = due_list($rows);
 $dueNow = count(array_filter($due, fn($d) => $d['date'] <= today()));
 
+$totalAssignedTasks = 0;
+$pendingTasks = 0;
+if ($admin) {
+    $totalAssignedTasks = (int)q("SELECT COUNT(*) FROM student_tasks WHERE status != 'Cancelled'")->fetchColumn();
+    $pendingTasks = (int)q("SELECT COUNT(*) FROM student_tasks WHERE status IN ('Pending', 'Assigned')")->fetchColumn();
+}
+
 page_start('Dashboard', $u, PORTALS[$u['role']]['label']);
 ?>
 <h1><?= $admin ? 'Team overview' : 'Hello, ' . h($u['name']) ?></h1>
 
+<?php if ($admin): ?>
+<!-- Prominent Super Admin Task Assignment Action Bar (Requirement 1) -->
+<div class="panel" style="background: linear-gradient(135deg, rgba(14,90,92,0.1), rgba(76,201,196,0.15)); border: 1.5px solid var(--accent); border-radius: 12px; padding: 1.25rem 1.5rem; margin: 1rem 0 1.5rem;">
+  <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+    <div style="display:flex; align-items:center; gap:0.9rem;">
+      <div style="font-size:1.75rem; width:44px; height:44px; border-radius:10px; background:var(--accent); color:var(--accent-fg); display:grid; place-items:center; flex-shrink:0;">📋</div>
+      <div>
+        <div style="font-size:1.15rem; font-weight:700; color:var(--fg);">Task Assignment Module</div>
+        <div class="small muted" style="margin-top:2px;">Assign processing tasks to students, trigger instant Firebase FCM push notifications, and monitor biometric verification.</div>
+      </div>
+    </div>
+    <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+      <a href="<?= h(url('admin/task_assignment.php#assign-form-card')) ?>" class="btn primary" style="font-weight:600;">+ Assign New Task</a>
+      <a href="<?= h(url('admin/task_assignment.php')) ?>" class="btn">View All Assigned Tasks (<?= $totalAssignedTasks ?>) →</a>
+    </div>
+  </div>
+</div>
+<?php endif; ?>
+
 <div class="kpis">
+  <?php if ($admin): ?>
+    <a class="kpi" style="text-decoration:none; color:inherit; cursor:pointer; border-left:4px solid var(--accent);" href="<?= h(url('admin/task_assignment.php')) ?>">
+      <div class="l">Task Assignment</div>
+      <div class="v"><?= $totalAssignedTasks ?></div>
+      <div class="s"><?= $pendingTasks ?> pending · Click to assign</div>
+    </a>
+  <?php endif; ?>
   <a class="kpi" style="text-decoration:none; color:inherit; cursor:pointer;" href="<?= h(url($base . '/students.php')) ?>"><div class="l">Total students</div><div class="v"><?= $n ?></div><div class="s"><?= $thisMonth ?> added this month · Click to view</div></a>
   <a class="kpi" style="text-decoration:none; color:inherit; cursor:pointer;" href="<?= h(url($base . '/students.php?kpi=onboarding')) ?>"><div class="l">In onboarding</div><div class="v"><?= $onb ?></div><div class="s">Consent, checklist or first meeting open</div></a>
   <a class="kpi" style="text-decoration:none; color:inherit; cursor:pointer;" href="<?= h(url($base . '/students.php?kpi=offers')) ?>"><div class="l">Offers received</div><div class="v"><?= $offers ?></div><div class="s"><?= $n ? round($offers / $n * 100) : 0 ?>% of students</div></a>

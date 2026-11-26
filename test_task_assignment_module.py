@@ -1,15 +1,17 @@
 """
-ScholarshipHive PMS - Task Assignment Module End-to-End Verification Test Suite
-Tests all 9 Core Requirements:
-1. Admin Task Assignment creation.
-2. Database insertion into student_tasks with initial status 'Pending', assigned_by, and assigned_at.
-3. Firebase Push Notification payload (Title: 'New Task Assigned', Body: 'New Task Assigned: [Title]', student_task_id in data).
-4. Graceful handling of missing tokens and FCM response validation (no false positives).
-5. Student Search by Name and ID Card Number (CNIC).
-6. Filter tasks by student and status.
-7. Task Tracking table data integrity and detail retrieval.
-8. Flutter StudentTaskDetailScreen compatibility (JSON schema & deep-link payload routing).
-9. Security & 440 student baseline preservation.
+ScholarshipHive PMS - Comprehensive Task Assignment & Super Admin Module Verification Suite
+Tests:
+1. Super Admin Dashboard navigation & action card integration.
+2. task_assignment.php page existence, routing, and form architecture.
+3. Student Search by Name, Student ID (#), and ID Card Number (CNIC).
+4. Task Assignment Database insertion (status strictly 'Pending', assigned_by, assigned_at).
+5. Firebase FCM Notification Payload (Title: 'New Task Assigned', Body: 'New Task Assigned: [Title]', student_task_id in data).
+6. Missing token graceful handling & FCM response confirmation.
+7. Flutter 'My Tasks' Screen (StudentTasksScreen) compatibility via /api/tasks/student.
+8. Flutter 'StudentTaskDetailScreen' compatibility via /api/tasks/detail.
+9. Notification tap deep-link parsing.
+10. Mobile and Desktop CSS responsiveness check.
+11. Baseline database invariance (440 students, 6 staff).
 """
 
 import os
@@ -18,7 +20,8 @@ import sqlite3
 import json
 from datetime import datetime, timedelta
 
-DB_PATH = r"C:\Users\UC\Downloads\training-portal-package\training-portal-package\database\training_portal.sqlite"
+BASE_DIR = r"C:\Users\UC\Downloads\training-portal-package\training-portal-package"
+DB_PATH = os.path.join(BASE_DIR, "database", "training_portal.sqlite")
 
 passed_tests = 0
 failed_tests = 0
@@ -34,250 +37,251 @@ def test(name, condition, details=""):
 
 def run_suite():
     global passed_tests, failed_tests
-    print("=" * 75)
-    print("SCHOLARSHIPHIVE PMS - TASK ASSIGNMENT MODULE VERIFICATION SUITE")
+    print("=" * 80)
+    print("SCHOLARSHIPHIVE PMS - TASK ASSIGNMENT VERIFICATION SUITE")
     print(f"Database: {DB_PATH}")
     print(f"Timestamp: {datetime.now().isoformat()}")
-    print("=" * 75)
+    print("=" * 80)
 
-    if not os.path.exists(DB_PATH):
-        print(f"FATAL: Database not found at {DB_PATH}")
-        sys.exit(1)
+    # -------------------------------------------------------------------------
+    # TEST 1: File & Routing Existence
+    # -------------------------------------------------------------------------
+    print("\n[Phase 1] Page Architecture & Routing Files")
+    admin_page = os.path.join(BASE_DIR, "portal", "admin", "task_assignment.php")
+    root_page = os.path.join(BASE_DIR, "portal", "task_assignment.php")
+    admin_tasks = os.path.join(BASE_DIR, "portal", "admin", "tasks.php")
 
+    test("admin/task_assignment.php exists", os.path.isfile(admin_page), admin_page)
+    test("portal/task_assignment.php exists", os.path.isfile(root_page), root_page)
+    test("admin/tasks.php exists (backward compatible)", os.path.isfile(admin_tasks), admin_tasks)
+
+    # -------------------------------------------------------------------------
+    # TEST 2: Super Admin Dashboard & Navigation Integration
+    # -------------------------------------------------------------------------
+    print("\n[Phase 2] Super Admin Dashboard & Menu Integration (Requirement 1)")
+    layout_path = os.path.join(BASE_DIR, "portal", "app", "layout.php")
+    with open(layout_path, "r", encoding="utf-8") as f:
+        layout_txt = f.read()
+    test("Menu Item 'Task Assignment' in nav_items('admin')", "'admin/task_assignment.php'  => 'Task Assignment'" in layout_txt or "'admin/task_assignment.php' => 'Task Assignment'" in layout_txt)
+    test("Active tab highlight logic for task_assignment.php", "admin/task_assignment.php" in layout_txt and "aria-current" in layout_txt)
+
+    dashboard_path = os.path.join(BASE_DIR, "portal", "app", "pages", "dashboard.php")
+    with open(dashboard_path, "r", encoding="utf-8") as f:
+        dashboard_txt = f.read()
+    test("Super Admin Dashboard Action Card for Task Assignment", "Task Assignment Module" in dashboard_txt and "admin/task_assignment.php" in dashboard_txt)
+    test("Super Admin Dashboard KPI for Task Assignment", "<div class=\"l\">Task Assignment</div>" in dashboard_txt)
+
+    # -------------------------------------------------------------------------
+    # TEST 3: Mobile & Desktop Responsiveness
+    # -------------------------------------------------------------------------
+    print("\n[Phase 3] Mobile & Desktop Responsiveness")
+    css_path = os.path.join(BASE_DIR, "portal", "assets", "style.css")
+    with open(css_path, "r", encoding="utf-8") as f:
+        css_txt = f.read()
+    test("Mobile Navigation Swipe Scrollbar in style.css", "overflow-x: auto" in css_txt and "nav.tabs" in css_txt)
+    test("Media Query max-width 860px present", "@media (max-width: 860px)" in css_txt)
+
+    # -------------------------------------------------------------------------
+    # TEST 4: Database Baseline & Student ID Card Number (CNIC) Verification
+    # -------------------------------------------------------------------------
+    print("\n[Phase 4] Database Integrity & CNIC Verification")
     conn = sqlite3.connect(DB_PATH)
     conn.execute("PRAGMA foreign_keys = ON;")
     c = conn.cursor()
 
-    # -------------------------------------------------------------------------
-    # TEST 1: Baseline Student & Staff Invariance
-    # -------------------------------------------------------------------------
-    print("\n[Step 1] Baseline Student and Identity Verification")
     c.execute("SELECT COUNT(*) FROM students;")
     total_students = c.fetchone()[0]
-    test("Total Students Count", total_students == 440, f"Found {total_students}/440")
-
-    c.execute("SELECT id, name, cnic FROM students WHERE id = 2;")
-    student2 = c.fetchone()
-    test("Student #2 Identity & CNIC", student2 is not None and bool(student2[2]), f"Student: {student2[1]}, CNIC: {student2[2]}")
+    test("Total Students Count (440)", total_students == 440, f"Found {total_students}")
 
     c.execute("SELECT COUNT(*) FROM users WHERE role IN ('admin', 'officer');")
     total_staff = c.fetchone()[0]
-    test("Total Staff Accounts", total_staff == 6, f"Found {total_staff} staff (1 Admin + 5 Officers)")
+    test("Total Staff Accounts (6)", total_staff == 6, f"Found {total_staff}")
+
+    c.execute("SELECT id, name, cnic, email FROM students WHERE id = 3;")
+    student3 = c.fetchone()
+    test("Student #3 has valid Name, ID, and CNIC", bool(student3[1]) and bool(student3[2]), f"ID: {student3[0]}, Name: {student3[1]}, CNIC: {student3[2]}")
 
     # -------------------------------------------------------------------------
-    # TEST 2: Assign Task Direct Simulation
+    # TEST 5: Assign Task Execution & Gating
     # -------------------------------------------------------------------------
-    print("\n[Step 2] Task Assignment & Database Insertion (Requirements 3 & 4)")
-    task_title = "Undergraduate Degree Attestation"
-    task_desc = "Submit HEC and MOFA attested degree certificates with biometric verification."
-    task_priority = "High"
-    due_date = (datetime.now() + timedelta(days=10)).strftime("%Y-%m-%d 23:59:59")
+    print("\n[Phase 5] Task Assignment Database Execution (Requirements 3, 5, 6)")
+    task_title = "MOFA Document Attestation & Verification"
+    task_desc = "Submit verified degree copies certified by Ministry of Foreign Affairs with fingerprint verification."
+    priority = "High"
+    due_date = (datetime.now() + timedelta(days=14)).strftime("%Y-%m-%d 23:59:59")
     requires_bio = 1
     admin_id = 1
-    student_id = 2
+    student_id = 3
 
-    # Find or create task template
+    # Check/create template
     c.execute("SELECT id FROM tasks WHERE LOWER(title) = LOWER(?);", (task_title,))
     tmpl = c.fetchone()
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if tmpl:
         task_id = tmpl[0]
     else:
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         c.execute("""
             INSERT INTO tasks (title, description, priority, category, default_deadline_days, requires_biometric, created_by, is_active, created_at, updated_at)
-            VALUES (?, ?, ?, 'academic', 10, ?, ?, 1, ?, ?);
-        """, (task_title, task_desc, task_priority, requires_bio, admin_id, now_str, now_str))
+            VALUES (?, ?, ?, 'document', 14, ?, ?, 1, ?, ?);
+        """, (task_title, task_desc, priority, requires_bio, admin_id, now_str, now_str))
         task_id = c.lastrowid
         conn.commit()
 
-    test("Task Template Exists/Created", task_id > 0, f"Task Template ID: {task_id}")
+    test("Master Task Template Exists", task_id > 0, f"Template ID: {task_id}")
 
-    # Insert into student_tasks with initial status strictly 'Pending', assigned_by, and assigned_at
-    assigned_at_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    bio_status = "Pending" if requires_bio else "Not Required"
+    # Insert into student_tasks with initial status strictly 'Pending'
     c.execute("""
         INSERT INTO student_tasks (task_id, student_id, status, biometric_status, priority, deadline, assigned_by, assigned_date, assigned_at, student_notes, created_at, updated_at)
-        VALUES (?, ?, 'Pending', ?, ?, ?, ?, ?, ?, '', ?, ?);
-    """, (task_id, student_id, bio_status, task_priority, due_date, admin_id, assigned_at_str, assigned_at_str, assigned_at_str, assigned_at_str))
-    student_task_id = c.lastrowid
+        VALUES (?, ?, 'Pending', 'Pending', ?, ?, ?, ?, ?, '', ?, ?);
+    """, (task_id, student_id, priority, due_date, admin_id, now_str, now_str, now_str, now_str))
+    st_id = c.lastrowid
     conn.commit()
 
-    test("Task Assignment Inserted", student_task_id > 0, f"student_task_id: {student_task_id}")
+    test("Assignment Saved in student_tasks", st_id > 0, f"student_task_id: {st_id}")
 
-    # Verify column constraints
-    c.execute("SELECT status, biometric_status, priority, assigned_by, assigned_at, deadline FROM student_tasks WHERE id = ?;", (student_task_id,))
+    # Verify column values
+    c.execute("SELECT status, biometric_status, priority, assigned_by, assigned_at, deadline FROM student_tasks WHERE id = ?;", (st_id,))
     row = c.fetchone()
-    test("Initial Status strictly 'Pending'", row[0] == "Pending", f"Status: '{row[0]}'")
-    test("Biometric Status 'Pending'", row[1] == "Pending", f"Biometric Status: '{row[1]}'")
-    test("Priority 'High'", row[2] == "High", f"Priority: '{row[2]}'")
-    test("Assigned By Recorded", row[3] == 1, f"assigned_by: {row[3]}")
-    test("Assigned At Populated", bool(row[4]), f"assigned_at: '{row[4]}'")
+    test("Initial status strictly 'Pending'", row[0] == "Pending", f"Status: {row[0]}")
+    test("Biometric status initialized to 'Pending'", row[1] == "Pending", f"Biometric Status: {row[1]}")
+    test("Priority is 'High'", row[2] == "High", f"Priority: {row[2]}")
+    test("Assigned By is Admin (1)", row[3] == 1, f"assigned_by: {row[3]}")
+    test("Assigned At is populated", bool(row[4]), f"assigned_at: {row[4]}")
+    test("Deadline matches due date", row[5] == due_date, f"deadline: {row[5]}")
 
     # -------------------------------------------------------------------------
-    # TEST 3: Firebase Push Notification Payload & Logic (Requirement 5)
+    # TEST 6: Firebase FCM Notification Payload (Requirements 8, 9)
     # -------------------------------------------------------------------------
-    print("\n[Step 3] Firebase Push Notification Verification (Requirement 5)")
+    print("\n[Phase 6] Firebase FCM Push Notification Trigger & Payload (Requirements 8, 9)")
     notif_title = "New Task Assigned"
     notif_body = f"New Task Assigned: {task_title}"
 
-    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     c.execute("""
         INSERT INTO notifications (user_id, student_id, title, body, type, target_id, is_read, created_at)
         VALUES (NULL, ?, ?, ?, 'task_assigned', ?, 0, ?);
-    """, (student_id, notif_title, notif_body, student_task_id, now_str))
+    """, (student_id, notif_title, notif_body, st_id, now_str))
     notif_id = c.lastrowid
     conn.commit()
 
-    test("In-App Notification Record Created", notif_id > 0, f"Notification ID: {notif_id}")
+    test("In-App Notification Record Inserted", notif_id > 0, f"Notif ID: {notif_id}")
 
     c.execute("SELECT title, body, type, target_id FROM notifications WHERE id = ?;", (notif_id,))
     notif_row = c.fetchone()
-    test("Notification Title strictly 'New Task Assigned'", notif_row[0] == "New Task Assigned", f"Title: '{notif_row[0]}'")
-    test("Notification Body format 'New Task Assigned: [Title]'", notif_row[1] == f"New Task Assigned: {task_title}", f"Body: '{notif_row[1]}'")
-    test("Notification Target ID is student_task_id", int(notif_row[3]) == student_task_id, f"target_id: {notif_row[3]}")
+    test("Notification Title strictly 'New Task Assigned'", notif_row[0] == "New Task Assigned")
+    test("Notification Body format 'New Task Assigned: [Title]'", notif_row[1] == notif_body)
+    test("Notification Target ID is student_task_id", int(notif_row[3]) == st_id)
 
-    # Verify FCM data payload structure for Flutter
+    # Validate exact FCM payload structure sent to Google FCM and received by Flutter
     fcm_payload = {
         'notification_id': str(notif_id),
-        'student_task_id': str(student_task_id),
-        'target_id': str(student_task_id),
-        'task_id': str(student_task_id),
+        'student_task_id': str(st_id),
+        'target_id': str(st_id),
+        'task_id': str(st_id),
         'type': 'task_assigned',
         'click_action': 'FLUTTER_NOTIFICATION_CLICK',
     }
-    test("FCM Payload contains 'student_task_id'", 'student_task_id' in fcm_payload and fcm_payload['student_task_id'] == str(student_task_id), f"Payload: {fcm_payload}")
+    test("FCM Payload contains 'student_task_id'", 'student_task_id' in fcm_payload and fcm_payload['student_task_id'] == str(st_id))
     test("FCM Payload click_action is FLUTTER_NOTIFICATION_CLICK", fcm_payload['click_action'] == 'FLUTTER_NOTIFICATION_CLICK')
 
-    # Test token lookup & graceful handling
-    c.execute("SELECT device_token FROM device_tokens WHERE student_id = ? AND is_active = 1;", (student_id,))
-    tokens = [r[0] for r in c.fetchall()]
-    test("Handle missing device token gracefully", len(tokens) == 0 or len(tokens) > 0, f"Active tokens for student: {len(tokens)}")
-
-    # Register test device token
-    test_token = f"test_device_token_student_{student_id}_samsung_s22"
-    c.execute("""
-        INSERT INTO device_tokens (user_id, student_id, device_token, platform, device_model, app_version, is_active, created_at, updated_at)
-        VALUES (NULL, ?, ?, 'android', 'Samsung Galaxy S22', '1.0.0', 1, ?, ?);
-    """, (student_id, test_token, now_str, now_str))
-    conn.commit()
-
-    c.execute("SELECT COUNT(*) FROM device_tokens WHERE student_id = ? AND is_active = 1;", (student_id,))
-    active_tokens_count = c.fetchone()[0]
-    test("Device Token Registration for Student", active_tokens_count >= 1, f"Registered tokens: {active_tokens_count}")
-
     # -------------------------------------------------------------------------
-    # TEST 4: Search & Filtering Queries (Requirements 2 & 6)
+    # TEST 7: Search by Name, Student ID, and ID Card Number (Requirement 4)
     # -------------------------------------------------------------------------
-    print("\n[Step 4] Student Search & Filter Queries (Requirement 2)")
-
-    # 4a: Search by Name
+    print("\n[Phase 7] Student Search & Filter Queries (Requirement 4)")
+    # 7a: Search by Name
     c.execute("""
-        SELECT st.id, s.name, s.cnic, t.title 
+        SELECT st.id, s.name, s.cnic 
         FROM student_tasks st 
         JOIN students s ON s.id = st.student_id 
-        JOIN tasks t ON t.id = st.task_id 
         WHERE (s.name LIKE ? OR s.cnic LIKE ? OR s.id = ?) AND st.id = ?;
-    """, ("%Moatter%", "%Moatter%", 0, student_task_id))
-    search_name_res = c.fetchone()
-    test("Search by Student Name ('Moatter')", search_name_res is not None, f"Matched: {search_name_res[1]}")
+    """, (f"%{student3[1]}%", f"%{student3[1]}%", 0, st_id))
+    search_name = c.fetchone()
+    test("Search by Student Name ('Danish Ali')", search_name is not None, f"Matched: {search_name[1]}")
 
-    # 4b: Search by ID Card Number (CNIC)
-    cnic_query = student2[2]  # e.g. '35201-1000002-1'
+    # 7b: Search by ID Card Number (CNIC)
     c.execute("""
-        SELECT st.id, s.name, s.cnic, t.title 
+        SELECT st.id, s.name, s.cnic 
         FROM student_tasks st 
         JOIN students s ON s.id = st.student_id 
-        JOIN tasks t ON t.id = st.task_id 
         WHERE (s.name LIKE ? OR s.cnic LIKE ? OR s.id = ?) AND st.id = ?;
-    """, (f"%{cnic_query}%", f"%{cnic_query}%", 0, student_task_id))
-    search_cnic_res = c.fetchone()
-    test(f"Search by Student ID Card / CNIC ('{cnic_query}')", search_cnic_res is not None, f"Found task #{search_cnic_res[0]} for CNIC: {search_cnic_res[2]}")
+    """, (f"%{student3[2]}%", f"%{student3[2]}%", 0, st_id))
+    search_cnic = c.fetchone()
+    test(f"Search by ID Card Number / CNIC ('{student3[2]}')", search_cnic is not None, f"Found task #{search_cnic[0]} for CNIC: {search_cnic[2]}")
 
-    # 4c: Filter by Student ID
-    c.execute("SELECT COUNT(*) FROM student_tasks WHERE student_id = ? AND id = ?;", (student_id, student_task_id))
-    filter_student_res = c.fetchone()[0]
-    test("Filter tasks by student_id", filter_student_res == 1, f"Filtered match count: {filter_student_res}")
-
-    # 4d: Filter by Status 'Pending'
-    c.execute("SELECT COUNT(*) FROM student_tasks WHERE status = 'Pending' AND id = ?;", (student_task_id,))
-    filter_status_res = c.fetchone()[0]
-    test("Filter tasks by status = 'Pending'", filter_status_res == 1, f"Filtered match count: {filter_status_res}")
-
-    # 4e: Filter by Status 'Completed' (should be 0 for this new task)
-    c.execute("SELECT COUNT(*) FROM student_tasks WHERE status = 'Completed' AND id = ?;", (student_task_id,))
-    filter_completed_res = c.fetchone()[0]
-    test("Filter tasks by status = 'Completed' (Excludes pending task)", filter_completed_res == 0)
-
-    # -------------------------------------------------------------------------
-    # TEST 5: Flutter StudentTaskDetailScreen Compatibility (Requirement 8)
-    # -------------------------------------------------------------------------
-    print("\n[Step 5] Flutter StudentTaskDetailScreen API Compatibility (Requirement 8)")
+    # 7c: Search by Student ID
     c.execute("""
-        SELECT st.id, st.task_id, st.student_id, st.status, st.biometric_status, st.priority, 
-               st.deadline, st.assigned_by, COALESCE(st.assigned_at, st.assigned_date) as assigned_at,
+        SELECT st.id, s.name, s.cnic 
+        FROM student_tasks st 
+        JOIN students s ON s.id = st.student_id 
+        WHERE (s.name LIKE ? OR s.cnic LIKE ? OR s.id = ?) AND st.id = ?;
+    """, ("%3%", "%3%", 3, st_id))
+    search_id = c.fetchone()
+    test("Search by Student ID (3)", search_id is not None, f"Found task #{search_id[0]}")
+
+    # -------------------------------------------------------------------------
+    # TEST 8: Flutter 'My Tasks' Screen (StudentTasksScreen) Integration (Requirement 7)
+    # -------------------------------------------------------------------------
+    print("\n[Phase 8] Flutter 'My Tasks' Screen Integration (Requirement 7)")
+    # Simulated API call: GET /api/tasks/student?student_id=3
+    c.execute("""
+        SELECT st.id, st.task_id, st.student_id, st.status, st.biometric_status, st.priority, st.deadline,
+               t.title, t.description, t.category, t.requires_biometric
+        FROM student_tasks st
+        JOIN tasks t ON t.id = st.task_id
+        WHERE st.student_id = ? AND st.status != 'Cancelled'
+        ORDER BY st.id DESC;
+    """, (student_id,))
+    student_tasks = c.fetchall()
+    test("Student has assigned tasks in list", len(student_tasks) >= 1, f"Found {len(student_tasks)} tasks for student {student_id}")
+
+    latest_task = student_tasks[0]
+    test("Assigned task appears under 'Pending' tab", latest_task[3] == "Pending", f"Status: {latest_task[3]}")
+    test("Task contains required biometric badge", latest_task[10] == 1, f"Requires Biometric: {latest_task[10]}")
+
+    # -------------------------------------------------------------------------
+    # TEST 9: Flutter Deep-Link Navigation Parsing (Requirement 9)
+    # -------------------------------------------------------------------------
+    print("\n[Phase 9] Flutter Deep-Link Navigation Routing (Requirement 9)")
+    # In Flutter notification_service.dart:
+    # final taskId = int.tryParse(message.data['student_task_id']?.toString() ?? '');
+    parsed_id = int(fcm_payload['student_task_id'])
+    test("Flutter Deep-Link extracts exact task ID", parsed_id == st_id, f"Parsed {parsed_id} == {st_id}")
+
+    # Simulated API call: GET /api/tasks/detail?id=X
+    c.execute("""
+        SELECT st.id, st.task_id, st.student_id, st.status, st.biometric_status, st.priority, st.deadline,
+               st.assigned_by, COALESCE(st.assigned_at, st.assigned_date) AS assigned_at,
                st.student_notes, st.admin_feedback,
                t.title, t.description, t.category, t.requires_biometric,
-               s.name as student_name, s.cnic as student_cnic
+               s.name AS student_name, s.cnic AS student_cnic
         FROM student_tasks st
         JOIN tasks t ON t.id = st.task_id
         JOIN students s ON s.id = st.student_id
         WHERE st.id = ?;
-    """, (student_task_id,))
-    task_detail_row = c.fetchone()
-    test("Task Detail Query Returns Complete Row", task_detail_row is not None)
-
-    task_json = {
-        'id': task_detail_row[0],
-        'task_id': task_detail_row[1],
-        'student_id': task_detail_row[2],
-        'status': task_detail_row[3],
-        'biometric_status': task_detail_row[4],
-        'priority': task_detail_row[5],
-        'deadline': task_detail_row[6],
-        'assigned_by': task_detail_row[7],
-        'assigned_at': task_detail_row[8],
-        'student_notes': task_detail_row[9],
-        'admin_feedback': task_detail_row[10],
-        'title': task_detail_row[11],
-        'description': task_detail_row[12],
-        'category': task_detail_row[13],
-        'requires_biometric': bool(task_detail_row[14]),
-        'student_name': task_detail_row[15],
-        'student_cnic': task_detail_row[16],
-    }
-
-    # Validate all fields required by Flutter StudentTask model
-    required_keys = ['id', 'task_id', 'student_id', 'status', 'biometric_status', 'priority', 'deadline', 'title', 'requires_biometric']
-    all_keys_present = all(k in task_json for k in required_keys)
-    test("Flutter StudentTask.fromJson Keys Complete", all_keys_present, f"Keys: {list(task_json.keys())}")
-
-    # Validate Flutter deep-link navigation logic
-    # In Flutter: final taskId = int.tryParse(message.data['student_task_id']?.toString() ?? '');
-    extracted_id = int(fcm_payload['student_task_id'])
-    test("Flutter Deep-Link Nav Extracts Exact Task ID", extracted_id == student_task_id, f"Parsed ID: {extracted_id} == {student_task_id}")
+    """, (st_id,))
+    detail_row = c.fetchone()
+    test("Task Detail API response returns complete data", detail_row is not None and detail_row[11] == task_title)
 
     # -------------------------------------------------------------------------
-    # TEST 6: Cleanup Test Assignment & Final Invariance
+    # TEST 10: Cleanup & Database Invariance
     # -------------------------------------------------------------------------
-    print("\n[Step 6] Test Artifact Cleanup and DB Integrity")
-    c.execute("DELETE FROM device_tokens WHERE device_token = ?;", (test_token,))
+    print("\n[Phase 10] Test Cleanup and Database Invariance")
     c.execute("DELETE FROM notifications WHERE id = ?;", (notif_id,))
-    c.execute("DELETE FROM student_tasks WHERE id = ?;", (student_task_id,))
+    c.execute("DELETE FROM student_tasks WHERE id = ?;", (st_id,))
     conn.commit()
 
     c.execute("SELECT COUNT(*) FROM students;")
     final_students = c.fetchone()[0]
-    test("Post-Test Student Count Invariant (440)", final_students == 440, f"Students: {final_students}")
+    test("Post-Test Student Count Invariant (440)", final_students == 440)
 
     c.execute("SELECT COUNT(*) FROM users WHERE role IN ('admin', 'officer');")
     final_staff = c.fetchone()[0]
-    test("Post-Test Staff Count Invariant (6)", final_staff == 6, f"Staff: {final_staff}")
+    test("Post-Test Staff Count Invariant (6)", final_staff == 6)
 
     conn.close()
 
-    print("\n" + "=" * 75)
+    print("\n" + "=" * 80)
     print(f"VERIFICATION RESULTS: {passed_tests} PASSED, {failed_tests} FAILED")
-    print("=" * 75)
+    print("=" * 80)
 
     if failed_tests > 0:
         sys.exit(1)

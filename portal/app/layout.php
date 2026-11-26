@@ -4,14 +4,14 @@ declare(strict_types=1);
 function nav_items(string $role): array {
     return match ($role) {
         'admin'   => [
-            'admin/index.php'        => 'Dashboard',
-            'admin/tasks.php'        => 'Task Management',
-            'admin/task_monitor.php' => 'Student Tasks',
-            'admin/students.php'     => 'Students',
-            'admin/officers.php'     => 'Processing Officers',
-            'admin/reports.php'      => 'Reports',
-            'admin/staff.php'        => 'Staff and admins',
-            'admin/logins.php'       => 'Student logins'
+            'admin/index.php'            => 'Dashboard',
+            'admin/task_assignment.php'  => 'Task Assignment',
+            'admin/task_monitor.php'     => 'Student Tasks',
+            'admin/students.php'         => 'Students',
+            'admin/officers.php'         => 'Processing Officers',
+            'admin/reports.php'          => 'Reports',
+            'admin/staff.php'            => 'Staff and admins',
+            'admin/logins.php'           => 'Student logins'
         ],
         'officer' => ['officer/index.php' => 'Dashboard', 'officer/students.php' => 'My students'],
         'student' => ['student/index.php' => 'My file', 'student/tasks.php' => 'My Tasks', 'student/notifications.php' => 'Notifications'],
@@ -61,8 +61,10 @@ function page_start(string $title, ?array $u = null, string $portalLabel = ''): 
 <header class="top">
   <a class="brand" href="<?= h(url('index.php')) ?>" style="text-decoration:none; color:inherit;"><div class="mark">P</div><div><div class="app"><?= h($CONFIG['app_name']) ?></div><small><?= h($portalLabel) ?></small></div></a>
   <nav class="tabs">
-    <?php foreach (nav_items($u['role']) as $href => $label): ?>
-      <a href="<?= h(url($href)) ?>" <?= $self === $href ? 'aria-current="page"' : '' ?>><?= h($label) ?></a>
+    <?php foreach (nav_items($u['role']) as $href => $label): 
+      $isActive = ($self === $href) || ($href === 'admin/task_assignment.php' && in_array($self, ['admin/task_assignment.php', 'admin/tasks.php', 'task_assignment.php'], true));
+    ?>
+      <a href="<?= h(url($href)) ?>" <?= $isActive ? 'aria-current="page"' : '' ?>><?= h($label) ?></a>
     <?php endforeach; ?>
     <a href="<?= h(url('account/password.php?portal=' . $u['role'])) ?>" <?= $self === 'account/password.php' ? 'aria-current="page"' : '' ?>>Change password</a>
   </nav>
