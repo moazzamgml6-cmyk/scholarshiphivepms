@@ -31,21 +31,29 @@ class PmsTaskService {
     /**
      * Create a new task catalog template.
      */
+    /**
+     * Create a new task catalog template with instructions and optional attachment.
+     */
     public static function createTask(
         string $title,
-        string $description,
+        string $description = '',
+        string $instructions = '',
         string $priority = 'Normal',
         string $category = 'general',
         int $defaultDeadlineDays = 7,
         bool $requiresBiometric = false,
+        ?string $attachmentPath = null,
         int $createdBy = 1
     ): int {
         $title = trim($title);
         if ($title === '') throw new InvalidArgumentException('Task title cannot be empty.');
 
-        q("INSERT INTO tasks (title, description, priority, category, default_deadline_days, requires_biometric, created_by, is_active, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
-            [$title, $description, $priority, $category, $defaultDeadlineDays, $requiresBiometric ? 1 : 0, $createdBy, now(), now()]
+        $validPriorities = ['Urgent', 'High', 'Normal', 'Low'];
+        if (!in_array($priority, $validPriorities, true)) $priority = 'Normal';
+
+        q("INSERT INTO tasks (title, description, instructions, priority, category, default_deadline_days, requires_biometric, attachment_path, created_by, is_active, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)",
+            [$title, $description, $instructions, $priority, $category, $defaultDeadlineDays, $requiresBiometric ? 1 : 0, $attachmentPath ?? '', $createdBy, now(), now()]
         );
 
         $taskId = (int)db()->lastInsertId();
@@ -76,9 +84,9 @@ class PmsTaskService {
         $bioStatus = ((int)$task['requires_biometric'] === 1) ? self::BIO_PENDING : self::BIO_NOT_REQUIRED;
 
         // Set initial status strictly to Pending, and record assigned_by and assigned_at
-        q("INSERT INTO student_tasks (task_id, student_id, status, biometric_status, priority, deadline, assigned_by, assigned_date, assigned_at, student_notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [$taskId, $studentId, self::STATUS_PENDING, $bioStatus, $priority, $deadline, $assignedBy, now(), now(), $studentNotes, now(), now()]
+        q("INSERT INTO student_tasks (task_id, student_id, status, biometric_status, priority, deadline, due_date, assigned_by, assigned_date, assigned_at, student_notes, notification_status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)",
+            [$taskId, $studentId, self::STATUS_PENDING, $bioStatus, $priority, $deadline, $deadline, $assignedBy, now(), now(), $studentNotes, now(), now()]
         );
 
         $studentTaskId = (int)db()->lastInsertId();
@@ -98,112 +106,186 @@ class PmsTaskService {
         PmsNotificationService::notifyTaskAssigned(
             $studentTaskId,
             $studentId,
-            $task['title']
+            $task['title'],
+            $taskId
         );
 
         return $studentTaskId;
     }
 
     /**
-     * Assign a direct task to a student from form fields (Title, Description, Priority, Due Date, Biometric Requirement).
-     * Returns student_task_id, task_id, and FCM delivery confirmation details.
+     * Assign a task directly to one, multiple, or all students.
+     * Prevents accidental duplicates and uses database transactions.
+     *
+     * @param int|array $studentIds Single ID or array of student IDs
      */
     public static function assignTaskDirect(
-        int $studentId,
+        int|array $studentIds,
         string $title,
-        string $description,
+        string $description = '',
+        string $instructions = '',
         string $priority = 'Normal',
         ?string $dueDate = null,
+        ?string $dueTime = null,
         bool $requiresBiometric = false,
+        ?string $attachmentPath = null,
         int $assignedBy = 1,
-        string $studentNotes = ''
+        string $studentNotes = '',
+        bool $skipDuplicates = true
     ): array {
         $title = trim($title);
         if ($title === '') {
             throw new InvalidArgumentException("Task Title is required.");
         }
 
-        $student = q("SELECT id, name, email, cnic FROM students WHERE id = ?", [$studentId])->fetch();
-        if (!$student) {
-            throw new RuntimeException("Student #$studentId not found.");
+        // Normalize student IDs array
+        if (!is_array($studentIds)) {
+            $studentIds = [(int)$studentIds];
+        }
+        $targetIds = array_unique(array_filter(array_map('intval', $studentIds)));
+        if (empty($targetIds)) {
+            throw new InvalidArgumentException("At least one recipient student must be selected.");
         }
 
-        $validPriorities = ['Low', 'Normal', 'High'];
+        $validPriorities = ['Urgent', 'High', 'Normal', 'Low'];
         if (!in_array($priority, $validPriorities, true)) {
             $priority = 'Normal';
         }
 
-        // Format deadline
+        // Format deadline from due date and optional due time
         if (!empty($dueDate)) {
-            $ts = strtotime($dueDate);
-            if ($ts === false) {
-                $deadline = date('Y-m-d 23:59:59', strtotime('+7 days'));
-            } else {
-                $deadline = (strlen(trim($dueDate)) <= 10) ? date('Y-m-d 23:59:59', $ts) : date('Y-m-d H:i:s', $ts);
-            }
+            $cleanDate = trim($dueDate);
+            $cleanTime = !empty($dueTime) ? trim($dueTime) : '23:59:59';
+            if (strlen($cleanTime) === 5) $cleanTime .= ':00'; // e.g. 18:30 -> 18:30:00
+            
+            $combined = $cleanDate . ' ' . $cleanTime;
+            $ts = strtotime($combined);
+            $deadline = ($ts !== false) ? date('Y-m-d H:i:s', $ts) : date('Y-m-d 23:59:59', strtotime('+7 days'));
         } else {
             $deadline = date('Y-m-d 23:59:59', strtotime('+7 days'));
         }
 
         // Find existing task template or create a new one
-        $existingTask = q("SELECT id FROM tasks WHERE LOWER(title) = LOWER(?) LIMIT 1", [$title])->fetch();
+        $existingTask = q("SELECT id, requires_biometric FROM tasks WHERE LOWER(title) = LOWER(?) LIMIT 1", [$title])->fetch();
         if ($existingTask) {
             $taskId = (int)$existingTask['id'];
+            if (!empty($instructions) || !empty($attachmentPath)) {
+                q("UPDATE tasks SET instructions = COALESCE(NULLIF(?, ''), instructions), attachment_path = COALESCE(NULLIF(?, ''), attachment_path), updated_at = ? WHERE id = ?",
+                    [$instructions, $attachmentPath, now(), $taskId]
+                );
+            }
         } else {
             $taskId = self::createTask(
                 $title,
                 $description,
+                $instructions,
                 $priority,
                 'general',
                 7,
                 $requiresBiometric,
+                $attachmentPath,
                 $assignedBy
             );
         }
 
         $bioStatus = $requiresBiometric ? self::BIO_PENDING : self::BIO_NOT_REQUIRED;
 
-        // Insert into student_tasks with initial status strictly 'Pending', recording assigned_by and assigned_at
-        q("INSERT INTO student_tasks (task_id, student_id, status, biometric_status, priority, deadline, assigned_by, assigned_date, assigned_at, student_notes, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            [$taskId, $studentId, self::STATUS_PENDING, $bioStatus, $priority, $deadline, $assignedBy, now(), now(), $studentNotes, now(), now()]
-        );
+        // Perform assignment inside a transaction
+        db()->beginTransaction();
+        $assignedCount = 0;
+        $skippedCount = 0;
+        $assignments = [];
+        $fcmSent = 0;
+        $fcmFailed = 0;
+        $fcmNoToken = 0;
 
-        $studentTaskId = (int)db()->lastInsertId();
+        try {
+            foreach ($targetIds as $sid) {
+                // Prevent duplicate assignment if task is already active for this student
+                if ($skipDuplicates) {
+                    $activeDuplicate = q("SELECT id FROM student_tasks WHERE student_id = ? AND task_id = ? AND status NOT IN ('Completed', 'Cancelled') LIMIT 1",
+                        [$sid, $taskId]
+                    )->fetch();
 
-        // Audit activity
-        self::logTaskActivity(
-            $studentTaskId,
-            $assignedBy,
-            'admin',
-            'assigned',
-            '',
-            self::STATUS_PENDING,
-            "Assigned '{$title}' to {$student['name']} (Deadline: $deadline)"
-        );
+                    if ($activeDuplicate) {
+                        $skippedCount++;
+                        continue;
+                    }
+                }
 
-        // Dispatch FCM push notification
-        $fcmResult = PmsNotificationService::notifyTaskAssigned(
-            $studentTaskId,
-            $studentId,
-            $title
-        );
+                $student = q("SELECT id, name, email, cnic FROM students WHERE id = ?", [$sid])->fetch();
+                if (!$student) {
+                    continue;
+                }
+
+                // Insert into student_tasks
+                q("INSERT INTO student_tasks (task_id, student_id, status, biometric_status, priority, deadline, due_date, assigned_by, assigned_date, assigned_at, student_notes, attachment_path, notification_status, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending', ?, ?)",
+                    [$taskId, $sid, self::STATUS_PENDING, $bioStatus, $priority, $deadline, $deadline, $assignedBy, now(), now(), $studentNotes, $attachmentPath ?? '', now(), now()]
+                );
+
+                $studentTaskId = (int)db()->lastInsertId();
+                $assignedCount++;
+
+                // Log audit activity
+                self::logTaskActivity(
+                    $studentTaskId,
+                    $assignedBy,
+                    'admin',
+                    'assigned',
+                    '',
+                    self::STATUS_PENDING,
+                    "Assigned '{$title}' to {$student['name']} (Deadline: {$deadline})"
+                );
+
+                // Dispatch push notification
+                $fcmResult = PmsNotificationService::notifyTaskAssigned(
+                    $studentTaskId,
+                    $sid,
+                    $title,
+                    $taskId
+                );
+
+                if (!empty($fcmResult['confirmed'])) {
+                    $fcmSent++;
+                } elseif (($fcmResult['status'] ?? '') === 'no_token') {
+                    $fcmNoToken++;
+                } else {
+                    $fcmFailed++;
+                }
+
+                $assignments[] = [
+                    'student_task_id' => $studentTaskId,
+                    'student_id'      => $sid,
+                    'student_name'    => $student['name'],
+                    'student_cnic'    => $student['cnic'],
+                    'fcm_result'      => $fcmResult,
+                ];
+            }
+
+            db()->commit();
+        } catch (Exception $e) {
+            db()->rollBack();
+            throw $e;
+        }
 
         return [
-            'student_task_id' => $studentTaskId,
-            'task_id'         => $taskId,
-            'student'         => $student,
-            'title'           => $title,
-            'priority'        => $priority,
-            'deadline'        => $deadline,
-            'biometric'       => $requiresBiometric,
-            'fcm_result'      => $fcmResult,
+            'task_id'        => $taskId,
+            'title'          => $title,
+            'priority'       => $priority,
+            'deadline'       => $deadline,
+            'biometric'      => $requiresBiometric,
+            'assigned_count' => $assignedCount,
+            'skipped_count'  => $skippedCount,
+            'assignments'    => $assignments,
+            'fcm_summary'    => [
+                'sent'     => $fcmSent,
+                'failed'   => $fcmFailed,
+                'no_token' => $fcmNoToken,
+            ],
         ];
     }
 
-    /**
-     * Assign a task to multiple students.
-     */
     public static function bulkAssignTask(
         int $taskId,
         array $studentIds,
@@ -251,7 +333,7 @@ class PmsTaskService {
      * Fetch all tasks assigned to a specific student.
      */
     public static function getStudentTasks(int $studentId, ?string $statusFilter = null): array {
-        $sql = "SELECT st.*, t.title, t.description, t.category, t.requires_biometric,
+        $sql = "SELECT st.*, t.title, t.description, t.category, t.requires_biometric, t.instructions, t.attachment_path AS task_attachment,
                        u.name AS assigned_by_name
                 FROM student_tasks st
                 JOIN tasks t ON t.id = st.task_id
@@ -281,7 +363,7 @@ class PmsTaskService {
      * Get specific student task detail with authorization.
      */
     public static function getTaskDetail(int $studentTaskId, array $currentUser): ?array {
-        $row = q("SELECT st.*, t.title, t.description, t.category, t.requires_biometric,
+        $row = q("SELECT st.*, t.title, t.description, t.category, t.requires_biometric, t.instructions, t.attachment_path AS task_attachment,
                          s.name AS student_name, s.email AS student_email, s.cnic AS student_cnic,
                          u.name AS assigned_by_name
                   FROM student_tasks st

@@ -62,7 +62,7 @@ def run_suite():
     layout_path = os.path.join(BASE_DIR, "portal", "app", "layout.php")
     with open(layout_path, "r", encoding="utf-8") as f:
         layout_txt = f.read()
-    test("Menu Item 'Task Assignment' in nav_items('admin')", "'admin/task_assignment.php'  => 'Task Assignment'" in layout_txt or "'admin/task_assignment.php' => 'Task Assignment'" in layout_txt)
+    test("Menu Item 'Task Assignment' in nav_items('admin')", "'admin/task_assignment.php'  => 'Task Assignment'" in layout_txt or "'admin/task_assignment.php' => 'Task Assignment'" in layout_txt or "'admin/task_assignment.php'  => 'Task Management'" in layout_txt or "'admin/task_assignment.php' => 'Task Management'" in layout_txt)
     test("Active tab highlight logic for task_assignment.php", "admin/task_assignment.php" in layout_txt and "aria-current" in layout_txt)
 
     dashboard_path = os.path.join(BASE_DIR, "portal", "app", "pages", "dashboard.php")

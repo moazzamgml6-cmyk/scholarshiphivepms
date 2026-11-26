@@ -1053,25 +1053,58 @@ if ($rootResource === 'tasks' && $subResource === 'assign' && $method === 'POST'
     $u = require_api_user(['admin']);
     $in = get_json_input();
     $taskId = (int)($in['task_id'] ?? 0);
-    if ($taskId <= 0) json_err('Valid task_id is required.', 422);
+    $title = trim((string)($in['title'] ?? ''));
 
-    $deadline = !empty($in['deadline']) ? trim((string)$in['deadline']) : null;
-    $priority = !empty($in['priority']) ? trim((string)$in['priority']) : null;
-    $notes = trim((string)($in['notes'] ?? ''));
+    $deadline = !empty($in['deadline']) ? trim((string)$in['deadline']) : (!empty($in['due_date']) ? trim((string)$in['due_date']) : null);
+    $priority = !empty($in['priority']) ? trim((string)$in['priority']) : 'Normal';
+    $notes = trim((string)($in['notes'] ?? $in['student_notes'] ?? ''));
+    $desc = trim((string)($in['description'] ?? ''));
+    $instructions = trim((string)($in['instructions'] ?? ''));
+    $requiresBiometric = !empty($in['requires_biometric']);
 
-    // Mode A: Assign to all students
+    // Direct task assignment by title (auto-create task template if needed)
+    if ($taskId <= 0 && $title !== '') {
+        $studentId = (int)($in['student_id'] ?? 0);
+        $studentIds = !empty($in['student_ids']) && is_array($in['student_ids']) ? $in['student_ids'] : [];
+        $assignAll = !empty($in['assign_all']);
+
+        if ($studentId > 0 && empty($studentIds) && !$assignAll) {
+            $studentIds = [$studentId];
+        }
+
+        try {
+            $result = PmsTaskService::assignTaskDirect(
+                $assignAll ? 'all' : (count($studentIds) === 1 ? $studentIds[0] : $studentIds),
+                $title,
+                $desc,
+                $priority,
+                $deadline,
+                $requiresBiometric,
+                (int)$u['id'],
+                $notes,
+                $instructions
+            );
+            json_ok($result, "Task successfully assigned.");
+        } catch (Exception $e) {
+            json_err($e->getMessage(), 400);
+        }
+    }
+
+    if ($taskId <= 0) json_err('Valid task_id or title is required.', 422);
+
+    // Mode A: Assign template to all students
     if (!empty($in['assign_all'])) {
         $count = PmsTaskService::assignToAllStudents($taskId, (int)$u['id'], $deadline, $priority, $notes);
         json_ok(['assigned_count' => $count], "Task successfully assigned to all $count students.");
     }
 
-    // Mode B: Assign to multiple students
+    // Mode B: Assign template to multiple students
     if (!empty($in['student_ids']) && is_array($in['student_ids'])) {
         $assigned = PmsTaskService::bulkAssignTask($taskId, $in['student_ids'], (int)$u['id'], $deadline, $priority, $notes);
         json_ok(['assigned_count' => count($assigned), 'assignments' => $assigned], "Task successfully assigned to " . count($assigned) . " students.");
     }
 
-    // Mode C: Assign to single student
+    // Mode C: Assign template to single student
     $studentId = (int)($in['student_id'] ?? 0);
     if ($studentId <= 0) json_err('student_id, student_ids array, or assign_all is required.', 422);
 
@@ -1273,6 +1306,101 @@ if ($rootResource === 'notifications' && $subResource === 'read-all' && $method 
 // GET /api/notifications/fcm-status — Check FCM push notification readiness
 if ($rootResource === 'notifications' && $subResource === 'fcm-status' && $method === 'GET') {
     json_ok(PmsNotificationService::getStatus(), 'FCM status retrieved');
+}
+
+// POST /api/notifications/broadcast — Broadcast push notification to one, multiple, or all students (admin only)
+if ($rootResource === 'notifications' && $subResource === 'broadcast' && $method === 'POST') {
+    $u = require_api_user(['admin']);
+    $in = get_json_input();
+    $title = trim((string)($in['title'] ?? ''));
+    $message = trim((string)($in['message'] ?? $in['body'] ?? ''));
+    $type = trim((string)($in['type'] ?? $in['notification_type'] ?? 'announcement'));
+    $imageUrl = !empty($in['image_url']) ? trim((string)$in['image_url']) : null;
+
+    if ($title === '') json_err('Notification title is required.', 422);
+    if ($message === '') json_err('Notification message is required.', 422);
+
+    $studentIds = [];
+    if (!empty($in['assign_all']) || !empty($in['broadcast_all'])) {
+        $rows = q("SELECT id FROM students WHERE csc_status != 'Cancelled' OR csc_status IS NULL")->fetchAll();
+        foreach ($rows as $r) {
+            $studentIds[] = (int)$r['id'];
+        }
+    } elseif (!empty($in['student_ids']) && is_array($in['student_ids'])) {
+        foreach ($in['student_ids'] as $sid) {
+            $val = (int)$sid;
+            if ($val > 0) $studentIds[] = $val;
+        }
+    } elseif (!empty($in['student_id'])) {
+        $sid = (int)$in['student_id'];
+        if ($sid > 0) $studentIds[] = $sid;
+    }
+
+    if (empty($studentIds)) json_err('Recipient student_id, student_ids array, or broadcast_all is required.', 422);
+
+    try {
+        $res = PmsNotificationService::broadcastCustomNotification($studentIds, $title, $message, $type, $imageUrl, (int)$u['id']);
+        json_ok($res, "Notification broadcast processed successfully.");
+    } catch (Exception $e) {
+        json_err($e->getMessage(), 400);
+    }
+}
+
+// POST /api/notifications/retry — Retry failed notification delivery (admin only)
+if ($rootResource === 'notifications' && $subResource === 'retry' && $method === 'POST') {
+    $u = require_api_user(['admin']);
+    $in = get_json_input();
+
+    if (!empty($in['retry_all'])) {
+        $res = PmsNotificationService::retryAllFailed();
+        json_ok($res, "Batch retry completed.");
+    }
+
+    $logId = (int)($in['log_id'] ?? $in['id'] ?? 0);
+    if ($logId <= 0) json_err('log_id or retry_all is required.', 422);
+
+    try {
+        $res = PmsNotificationService::retryNotification($logId);
+        if (!empty($res['success'])) {
+            json_ok($res, "Notification #$logId retry succeeded.");
+        } else {
+            json_err("Notification #$logId retry failed: " . ($res['error'] ?? 'Unknown error'), 400, $res);
+        }
+    } catch (Exception $e) {
+        json_err($e->getMessage(), 400);
+    }
+}
+
+// GET /api/notifications/logs — Get push notification logs (admin only)
+if ($rootResource === 'notifications' && $subResource === 'logs' && $method === 'GET') {
+    $u = require_api_user(['admin']);
+    $status = get('status') ?: null;
+    $type = get('type') ?: null;
+    $studentId = (int)get('student_id');
+    $limit = min(100, max(1, (int)(get('limit') ?: 50)));
+
+    $where = ["1=1"];
+    $params = [];
+    if (!empty($status) && $status !== 'all') {
+        $where[] = "nl.status = ?";
+        $params[] = $status;
+    }
+    if (!empty($type) && $type !== 'all') {
+        $where[] = "nl.notification_type = ?";
+        $params[] = $type;
+    }
+    if ($studentId > 0) {
+        $where[] = "nl.student_id = ?";
+        $params[] = $studentId;
+    }
+
+    $rows = q("SELECT nl.*, s.name AS student_name, s.cnic AS student_cnic
+               FROM notification_logs nl
+               LEFT JOIN students s ON s.id = nl.student_id
+               WHERE " . implode(' AND ', $where) . "
+               ORDER BY nl.id DESC LIMIT $limit", $params)->fetchAll();
+
+    json_ok(['logs' => $rows, 'count' => count($rows)]);
 }
 
 // ======================================================================

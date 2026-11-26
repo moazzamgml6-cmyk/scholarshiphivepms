@@ -185,89 +185,285 @@ class PmsNotificationService {
         return false;
     }
 
-    /**
-     * Specifically dispatch Task Assignment notification to student.
+        /**
+     * Specifically dispatch Task Assignment notification to student with comprehensive logging.
      * Guaranteed compliance:
      * - Notification title: "New Task Assigned"
-     * - Notification body: "New Task Assigned: [Task Title]"
-     * - Data payload includes: student_task_id, target_id, type: 'task_assigned', click_action: 'FLUTTER_NOTIFICATION_CLICK'
-     * - Does NOT report success unless Firebase explicitly confirms the send request (HTTP 200).
+     * - Notification body: "You have received a new task: [Task Title]"
+     * - Data payload includes: type: 'task_assigned', task_id, student_task_id, student_id, click_action
+     * - Multi-device support per student.
+     * - Full delivery logging in notification_logs table.
+     * - Deactivates invalid/expired tokens.
+     * - Updates student_tasks.notification_status ('Sent', 'Failed', 'No Token').
      */
-    public static function notifyTaskAssigned(int $studentTaskId, int $studentId, string $taskTitle): array {
+    public static function notifyTaskAssigned(
+        int $studentTaskId,
+        int $studentId,
+        string $taskTitle,
+        int $taskId = 0,
+        ?string $customBody = null
+    ): array {
         $title = "New Task Assigned";
-        $body = "New Task Assigned: " . $taskTitle;
+        $body = $customBody ?: ("You have received a new task: " . $taskTitle);
 
-        // 1. Permanent database notification record
+        // 1. Permanent database in-app notification record
         q("INSERT INTO notifications (user_id, student_id, title, body, type, target_id, is_read, created_at)
            VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
             [null, $studentId, $title, $body, 'task_assigned', $studentTaskId, now()]
         );
         $notifId = (int)db()->lastInsertId();
 
-        // 2. Log system action
+        // 2. Audit system action
         log_action("Task assigned notification: {$taskTitle} (Task #{$studentTaskId})", $studentId);
 
         // 3. Find active registered devices for student
-        $rows = q("SELECT device_token FROM device_tokens WHERE student_id = ? AND is_active = 1", [$studentId])->fetchAll();
+        $rows = q("SELECT id, device_token, platform, device_model FROM device_tokens WHERE student_id = ? AND is_active = 1", [$studentId])->fetchAll();
         $tokens = [];
         foreach ($rows as $r) {
             if (!empty($r['device_token'])) {
-                $tokens[] = trim((string)$r['device_token']);
+                $tokens[] = [
+                    'id'    => (int)$r['id'],
+                    'token' => trim((string)$r['device_token']),
+                    'model' => (string)($r['device_model'] ?? 'Android'),
+                ];
             }
         }
-        $tokens = array_unique(array_filter($tokens));
 
+        $payload = [
+            'notification_id' => (string)$notifId,
+            'type'            => 'task_assigned',
+            'task_id'         => (string)($taskId > 0 ? $taskId : $studentTaskId),
+            'student_task_id' => (string)$studentTaskId,
+            'student_id'      => (string)$studentId,
+            'click_action'    => 'FLUTTER_NOTIFICATION_CLICK',
+        ];
+
+        // If student has no registered devices
         if (empty($tokens)) {
+            // Log in notification_logs as no_token
+            q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+               VALUES (?, NULL, ?, 'task_assigned', ?, ?, ?, '', 'no_token', 'No active device token registered for this student.', 0, ?, ?)",
+                [$studentId, $studentTaskId, $title, $body, json_encode($payload), now(), now()]
+            );
+
+            // Update student_tasks notification_status
+            q("UPDATE student_tasks SET notification_status = 'No Token' WHERE id = ?", [$studentTaskId]);
+
             return [
                 'confirmed'       => false,
                 'tokens_found'    => 0,
                 'sent_count'      => 0,
-                'status_text'     => 'No active device registered for this student. In-app notification saved.',
+                'status'          => 'no_token',
+                'status_text'     => 'No active device registered for this student. In-app notification preserved.',
                 'error'           => null,
                 'notification_id' => $notifId,
             ];
         }
 
-        // 4. Dispatch FCM push notification
-        $data = [
-            'notification_id' => (string)$notifId,
-            'student_task_id' => (string)$studentTaskId,
-            'target_id'       => (string)$studentTaskId,
-            'task_id'         => (string)$studentTaskId,
-            'type'            => 'task_assigned',
-            'click_action'    => 'FLUTTER_NOTIFICATION_CLICK',
-        ];
-
+        // 4. Dispatch to each active device token
         $sentCount = 0;
+        $failedCount = 0;
         $lastError = null;
-        foreach ($tokens as $token) {
-            $ok = self::sendToToken($token, $title, $body, $data);
+
+        foreach ($tokens as $t) {
+            $deviceToken = $t['token'];
+            $ok = self::sendToToken($deviceToken, $title, $body, $payload);
+
             if ($ok) {
                 $sentCount++;
+                q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, sent_at, created_at, updated_at)
+                   VALUES (?, NULL, ?, 'task_assigned', ?, ?, ?, ?, 'sent', '', 0, ?, ?, ?)",
+                    [$studentId, $studentTaskId, $title, $body, json_encode($payload), $deviceToken, now(), now(), now()]
+                );
             } else {
-                $lastError = self::$lastDeliveryError ?? 'FCM endpoint did not confirm delivery';
+                $failedCount++;
+                $errorStr = self::$lastDeliveryError ?? 'FCM delivery not confirmed';
+                $lastError = $errorStr;
+
+                q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+                   VALUES (?, NULL, ?, 'task_assigned', ?, ?, ?, ?, 'failed', ?, 0, ?, ?)",
+                    [$studentId, $studentTaskId, $title, $body, json_encode($payload), $deviceToken, $errorStr, now(), now()]
+                );
+
+                // Auto-deactivate token if expired or unregistered
+                if (preg_match('#(UNREGISTERED|NotRegistered|InvalidRegistration|INVALID_ARGUMENT)#i', $errorStr)) {
+                    q("UPDATE device_tokens SET is_active = 0, updated_at = ? WHERE id = ?", [now(), $t['id']]);
+                }
             }
         }
 
         if ($sentCount > 0) {
+            q("UPDATE student_tasks SET notification_status = 'Sent' WHERE id = ?", [$studentTaskId]);
             return [
                 'confirmed'       => true,
                 'tokens_found'    => count($tokens),
                 'sent_count'      => $sentCount,
+                'failed_count'    => $failedCount,
+                'status'          => 'sent',
                 'status_text'     => "Push notification successfully confirmed and sent to {$sentCount} student device(s).",
                 'error'           => null,
                 'notification_id' => $notifId,
             ];
         }
 
+        q("UPDATE student_tasks SET notification_status = 'Failed' WHERE id = ?", [$studentTaskId]);
         return [
             'confirmed'       => false,
             'tokens_found'    => count($tokens),
             'sent_count'      => 0,
+            'failed_count'    => $failedCount,
+            'status'          => 'failed',
             'status_text'     => "FCM delivery could not be confirmed ({$lastError}). In-app notification preserved.",
             'error'           => $lastError,
             'notification_id' => $notifId,
         ];
+    }
+
+    /**
+     * Broadcast a custom announcement or alert to one, multiple, or all students.
+     */
+    public static function broadcastCustomNotification(
+        array $studentIds,
+        string $title,
+        string $message,
+        string $type = 'announcement',
+        ?string $imageUrl = null,
+        int $assignedBy = 1
+    ): array {
+        $title = trim($title);
+        $message = trim($message);
+        if ($title === '' || $message === '') {
+            throw new InvalidArgumentException("Notification title and message are required.");
+        }
+
+        $studentIds = array_unique(array_filter(array_map('intval', $studentIds)));
+        if (empty($studentIds)) {
+            throw new InvalidArgumentException("No valid student recipients selected.");
+        }
+
+        $totalRecipients = count($studentIds);
+        $totalDevices = 0;
+        $totalSent = 0;
+        $totalFailed = 0;
+        $totalNoToken = 0;
+
+        foreach ($studentIds as $sid) {
+            // 1. In-app notification
+            q("INSERT INTO notifications (user_id, student_id, title, body, type, is_read, created_at)
+               VALUES (?, ?, ?, ?, ?, 0, ?)",
+                [null, $sid, $title, $message, $type, now()]
+            );
+            $notifId = (int)db()->lastInsertId();
+
+            $payload = [
+                'notification_id' => (string)$notifId,
+                'type'            => $type,
+                'student_id'      => (string)$sid,
+                'image_url'       => (string)($imageUrl ?? ''),
+                'click_action'    => 'FLUTTER_NOTIFICATION_CLICK',
+            ];
+
+            // 2. Active tokens
+            $tokens = q("SELECT id, device_token FROM device_tokens WHERE student_id = ? AND is_active = 1", [$sid])->fetchAll();
+            if (empty($tokens)) {
+                $totalNoToken++;
+                q("INSERT INTO notification_logs (student_id, user_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+                   VALUES (?, NULL, ?, ?, ?, ?, '', 'no_token', 'No active device registered.', 0, ?, ?)",
+                    [$sid, $type, $title, $message, json_encode($payload), now(), now()]
+                );
+                continue;
+            }
+
+            foreach ($tokens as $t) {
+                $totalDevices++;
+                $tokenStr = trim((string)$t['device_token']);
+                $ok = self::sendToToken($tokenStr, $title, $message, $payload);
+                if ($ok) {
+                    $totalSent++;
+                    q("INSERT INTO notification_logs (student_id, user_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, sent_at, created_at, updated_at)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 'sent', '', 0, ?, ?, ?)",
+                        [$sid, $type, $title, $message, json_encode($payload), $tokenStr, now(), now(), now()]
+                    );
+                } else {
+                    $totalFailed++;
+                    $err = self::$lastDeliveryError ?? 'FCM send failed';
+                    q("INSERT INTO notification_logs (student_id, user_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+                       VALUES (?, NULL, ?, ?, ?, ?, ?, 'failed', ?, 0, ?, ?)",
+                        [$sid, $type, $title, $message, json_encode($payload), $tokenStr, $err, now(), now()]
+                    );
+                }
+            }
+        }
+
+        return [
+            'total_recipients' => $totalRecipients,
+            'devices_targeted' => $totalDevices,
+            'sent_count'       => $totalSent,
+            'failed_count'     => $totalFailed,
+            'no_token_count'   => $totalNoToken,
+        ];
+    }
+
+    /**
+     * Retry a specific failed notification from notification_logs.
+     */
+    public static function retryNotification(int $logId): array {
+        $log = q("SELECT * FROM notification_logs WHERE id = ?", [$logId])->fetch();
+        if (!$log) throw new RuntimeException("Notification log #$logId not found.");
+
+        $token = trim((string)$log['device_token']);
+        $sid = (int)($log['student_id'] ?? 0);
+
+        // If no token was saved in log, try finding an active token for this student now
+        if (empty($token) && $sid > 0) {
+            $active = q("SELECT device_token FROM device_tokens WHERE student_id = ? AND is_active = 1 LIMIT 1", [$sid])->fetch();
+            if ($active && !empty($active['device_token'])) {
+                $token = trim((string)$active['device_token']);
+            }
+        }
+
+        if (empty($token)) {
+            q("UPDATE notification_logs SET retry_count = retry_count + 1, error_message = 'Still no active device token registered.', updated_at = ? WHERE id = ?", [now(), $logId]);
+            return ['success' => false, 'error' => 'No active device token found for student.'];
+        }
+
+        $payload = json_decode((string)($log['data_payload'] ?: '{}'), true) ?: [];
+        $payload['click_action'] = 'FLUTTER_NOTIFICATION_CLICK';
+
+        $ok = self::sendToToken($token, (string)$log['title'], (string)$log['body'], $payload);
+
+        if ($ok) {
+            q("UPDATE notification_logs SET status = 'sent', device_token = ?, error_message = '', retry_count = retry_count + 1, sent_at = ?, updated_at = ? WHERE id = ?",
+                [$token, now(), now(), $logId]
+            );
+            if (!empty($log['student_task_id'])) {
+                q("UPDATE student_tasks SET notification_status = 'Sent' WHERE id = ?", [(int)$log['student_task_id']]);
+            }
+            return ['success' => true, 'error' => null];
+        }
+
+        $err = self::$lastDeliveryError ?? 'Retry FCM delivery failed';
+        q("UPDATE notification_logs SET status = 'failed', device_token = ?, error_message = ?, retry_count = retry_count + 1, updated_at = ? WHERE id = ?",
+            [$token, $err, now(), $logId]
+        );
+        return ['success' => false, 'error' => $err];
+    }
+
+    /**
+     * Retry all failed notifications.
+     */
+    public static function retryAllFailed(): array {
+        $failed = q("SELECT id FROM notification_logs WHERE status = 'failed' ORDER BY id DESC LIMIT 100")->fetchAll();
+        $retried = 0;
+        $succeeded = 0;
+        foreach ($failed as $row) {
+            $res = self::retryNotification((int)$row['id']);
+            $retried++;
+            if (!empty($res['success'])) {
+                $succeeded++;
+            }
+        }
+        return ['retried' => $retried, 'succeeded' => $succeeded, 'failed' => ($retried - $succeeded)];
     }
 
     /**

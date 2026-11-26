@@ -120,7 +120,33 @@ CREATE INDEX IF NOT EXISTS idx_task_activity_task ON task_activity_logs(student_
 CREATE INDEX IF NOT EXISTS idx_task_activity_actor ON task_activity_logs(actor_id, actor_role);
 CREATE INDEX IF NOT EXISTS idx_task_activity_time ON task_activity_logs(created_at);
 
--- 7. Seed Standard Initial Task Templates
+-- 7. Real-time Notification Logs (Tracks sent, failed, retry status)
+CREATE TABLE IF NOT EXISTS notification_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    student_id INTEGER,
+    user_id INTEGER,
+    student_task_id INTEGER,
+    notification_type TEXT NOT NULL DEFAULT 'task_assigned',
+    title TEXT NOT NULL,
+    body TEXT NOT NULL,
+    data_payload TEXT DEFAULT '{}',
+    device_token TEXT DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT DEFAULT '',
+    retry_count INTEGER DEFAULT 0,
+    sent_at TEXT DEFAULT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+    FOREIGN KEY (student_task_id) REFERENCES student_tasks(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notif_logs_student ON notification_logs(student_id);
+CREATE INDEX IF NOT EXISTS idx_notif_logs_status ON notification_logs(status);
+CREATE INDEX IF NOT EXISTS idx_notif_logs_type ON notification_logs(notification_type);
+CREATE INDEX IF NOT EXISTS idx_notif_logs_task ON notification_logs(student_task_id);
+
+-- 8. Seed Standard Initial Task Templates
 INSERT INTO tasks (id, title, description, priority, category, default_deadline_days, requires_biometric, created_by, is_active, created_at, updated_at)
 VALUES 
 (1, 'Submit Passport Copy', 'Upload high-resolution color scan of all valid passport pages including photo page and exit/entry stamps.', 'High', 'document', 5, 0, 1, 1, datetime('now'), datetime('now')),
