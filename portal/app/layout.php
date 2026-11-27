@@ -32,6 +32,47 @@ function theme_toggle_btn(): string {
 }
 
 /**
+ * Super Admin & Portal Notification Bell Button with live unread badge.
+ */
+function notification_bell_btn(?array $u): string {
+    if (!$u) return '';
+    $role = $u['role'] ?? 'admin';
+    $unread = 0;
+    $targetUrl = 'admin/notifications.php';
+
+    try {
+        if ($role === 'student') {
+            $sid = (int)($u['student_id'] ?? 0);
+            $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE (student_id = ? OR (student_id IS NULL AND user_id IS NULL)) AND is_read = 0", [$sid])->fetchColumn();
+            $targetUrl = 'student/notifications.php';
+        } elseif ($role === 'officer') {
+            $uid = (int)($u['id'] ?? 0);
+            $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0", [$uid])->fetchColumn();
+            $targetUrl = 'admin/notifications.php';
+        } else {
+            // Admin: unread count for admin / portal notifications
+            $uid = (int)($u['id'] ?? 0);
+            $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE (user_id = ? OR (user_id IS NULL AND student_id IS NULL)) AND is_read = 0", [$uid])->fetchColumn();
+            $targetUrl = 'admin/notifications.php';
+        }
+    } catch (Exception $e) {
+        $unread = 0;
+    }
+
+    $badge = $unread > 0 
+        ? '<span class="notif-bell-badge" data-count="' . $unread . '">' . ($unread > 99 ? '99+' : $unread) . '</span>'
+        : '';
+
+    return '<a href="' . h(url($targetUrl)) . '" class="notif-bell-btn" title="Notification Center' . ($unread > 0 ? " ($unread unread)" : '') . '" aria-label="Notifications">'
+         . '<svg class="notif-bell-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">'
+         . '<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"></path>'
+         . '<path d="M13.73 21a2 2 0 0 1-3.46 0"></path>'
+         . '</svg>'
+         . $badge
+         . '</a>';
+}
+
+/**
  * Inline early-execution script to prevent Flash of Incorrect Theme (FOUC).
  */
 function theme_boot_script(): string {
@@ -73,6 +114,7 @@ function page_start(string $title, ?array $u = null, string $portalLabel = ''): 
     <a href="<?= h(url('account/password.php?portal=' . $u['role'])) ?>" <?= $self === 'account/password.php' ? 'aria-current="page"' : '' ?>>Change password</a>
   </nav>
   <div class="who">
+    <?= notification_bell_btn($u) ?>
     <?= theme_toggle_btn() ?>
     <span class="role"><?= h(ucfirst($u['role'] === 'officer' ? 'Officer' : $u['role'])) ?></span>
     <b><?= h($u['name']) ?></b>

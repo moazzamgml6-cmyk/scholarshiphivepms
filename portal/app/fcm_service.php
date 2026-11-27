@@ -16,7 +16,8 @@ class PmsNotificationService {
     private static ?string $lastDeliveryError = null;
 
     /**
-     * Create an in-app notification and optionally dispatch a push notification to registered devices.
+     * Create an in-app notification and dispatch push notification to registered devices.
+     * Prevents duplicate notifications within a 60-second window.
      */
     public static function notify(
         ?int $studentId,
@@ -26,6 +27,16 @@ class PmsNotificationService {
         string $type = 'general',
         ?int $targetId = null
     ): int {
+        // Prevent accidental duplicate notification spam within 60 seconds
+        if ($studentId !== null && $studentId > 0) {
+            $recent = q("SELECT id FROM notifications WHERE student_id = ? AND title = ? AND body = ? AND created_at >= datetime('now', '-60 seconds') LIMIT 1",
+                [$studentId, $title, $body]
+            )->fetch();
+            if ($recent) {
+                return (int)$recent['id'];
+            }
+        }
+
         // 1. Permanent database notification record
         q("INSERT INTO notifications (user_id, student_id, title, body, type, target_id, is_read, created_at)
            VALUES (?, ?, ?, ?, ?, ?, 0, ?)",
@@ -36,7 +47,7 @@ class PmsNotificationService {
         // 2. Log system action
         log_action("Notification ($type): $title", $studentId);
 
-        // 3. Dispatch push notification to registered FCM device tokens
+        // 3. Dispatch push notification to registered FCM device tokens with delivery tracking
         self::dispatchPush($studentId, $userId, $title, $body, [
             'notification_id' => (string)$notifId,
             'type'            => $type,
@@ -49,6 +60,7 @@ class PmsNotificationService {
 
     /**
      * Dispatch FCM push notification to all active devices registered for this student or user.
+     * Automatically logs attempt in notification_logs and deactivates expired/dead tokens.
      */
     public static function dispatchPush(
         ?int $studentId,
@@ -57,31 +69,66 @@ class PmsNotificationService {
         string $body,
         array $data = []
     ): int {
-        $tokens = [];
+        $notifId = isset($data['notification_id']) ? (int)$data['notification_id'] : 0;
+        $type = $data['type'] ?? 'general';
+        $targetId = isset($data['target_id']) ? (int)$data['target_id'] : null;
+
+        $devices = [];
         if ($studentId !== null && $studentId > 0) {
-            $rows = q("SELECT device_token FROM device_tokens WHERE student_id = ? AND is_active = 1", [$studentId])->fetchAll();
+            $rows = q("SELECT id, device_token FROM device_tokens WHERE student_id = ? AND is_active = 1", [$studentId])->fetchAll();
             foreach ($rows as $r) {
-                if (!empty($r['device_token'])) $tokens[] = $r['device_token'];
+                if (!empty($r['device_token'])) {
+                    $devices[] = ['id' => (int)$r['id'], 'token' => trim((string)$r['device_token'])];
+                }
             }
         }
         if ($userId !== null && $userId > 0) {
-            $rows = q("SELECT device_token FROM device_tokens WHERE user_id = ? AND is_active = 1", [$userId])->fetchAll();
+            $rows = q("SELECT id, device_token FROM device_tokens WHERE user_id = ? AND is_active = 1", [$userId])->fetchAll();
             foreach ($rows as $r) {
-                if (!empty($r['device_token'])) $tokens[] = $r['device_token'];
+                if (!empty($r['device_token'])) {
+                    $devices[] = ['id' => (int)$r['id'], 'token' => trim((string)$r['device_token'])];
+                }
             }
         }
 
-        $tokens = array_unique(array_filter($tokens));
-        if (empty($tokens)) {
-            // No devices registered yet; notification is safely preserved in DB notification center
+        $payload = array_merge($data, [
+            'click_action' => 'FLUTTER_NOTIFICATION_CLICK',
+            'title'        => $title,
+            'body'         => $body,
+        ]);
+
+        if (empty($devices)) {
+            // Log in notification_logs as no_token
+            q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, '', 'no_token', 'No active device registered for student.', 0, ?, ?)",
+                [$studentId, $userId, ($type === 'task_assigned' ? $targetId : null), $type, $title, $body, json_encode($payload), now(), now()]
+            );
             return 0;
         }
 
-        // Deliver to each token
+        // Deliver to each token with status logging
         $sentCount = 0;
-        foreach ($tokens as $token) {
-            $success = self::sendToToken($token, $title, $body, $data);
-            if ($success) $sentCount++;
+        foreach ($devices as $d) {
+            $tokenStr = $d['token'];
+            $success = self::sendToToken($tokenStr, $title, $body, $payload);
+            if ($success) {
+                $sentCount++;
+                q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, sent_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'sent', '', 0, ?, ?, ?)",
+                    [$studentId, $userId, ($type === 'task_assigned' ? $targetId : null), $type, $title, $body, json_encode($payload), $tokenStr, now(), now(), now()]
+                );
+            } else {
+                $err = self::$lastDeliveryError ?? 'FCM send failed';
+                q("INSERT INTO notification_logs (student_id, user_id, student_task_id, notification_type, title, body, data_payload, device_token, status, error_message, retry_count, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'failed', ?, 0, ?, ?)",
+                    [$studentId, $userId, ($type === 'task_assigned' ? $targetId : null), $type, $title, $body, json_encode($payload), $tokenStr, $err, now(), now()]
+                );
+
+                // Auto-deactivate token if expired or unregistered
+                if (preg_match('#(UNREGISTERED|NotRegistered|InvalidRegistration|INVALID_ARGUMENT)#i', $err)) {
+                    q("UPDATE device_tokens SET is_active = 0, updated_at = ? WHERE id = ?", [now(), $d['id']]);
+                }
+            }
         }
 
         return $sentCount;
@@ -142,6 +189,8 @@ class PmsNotificationService {
 
             if ($httpCode === 200) {
                 return true;
+            } else {
+                self::$lastDeliveryError = "FCM v1 HTTP $httpCode: " . substr((string)$response, 0, 300);
             }
         }
 
@@ -177,11 +226,17 @@ class PmsNotificationService {
             $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
             curl_close($ch);
 
-            return $httpCode === 200;
+            if ($httpCode === 200) {
+                return true;
+            } else {
+                self::$lastDeliveryError = "FCM Legacy HTTP $httpCode: " . substr((string)$result, 0, 300);
+            }
         }
 
         // If no external FCM credentials are configured, return false and record diagnostic
-        self::$lastDeliveryError = 'No Firebase service account JSON or FCM Server Key configured in environment.';
+        if (empty(self::$lastDeliveryError)) {
+            self::$lastDeliveryError = 'No Firebase service account JSON or FCM Server Key configured in environment.';
+        }
         return false;
     }
 

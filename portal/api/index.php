@@ -606,6 +606,31 @@ if ($rootResource === 'students' && is_numeric($subResource) && in_array($method
     q("UPDATE students SET " . implode(', ', $updates) . " WHERE id = ?", $params);
     log_action('Updated student from API', $id);
 
+    // Trigger real-time notifications to student for critical updates
+    if (isset($in['visa']) && trim((string)$in['visa']) !== '' && trim((string)$in['visa']) !== ($existing['visa'] ?? '')) {
+        $v = trim((string)$in['visa']);
+        $vTitle = $v === 'Granted' ? 'Visa Granted! 🎉' : ($v === 'Refused' ? 'Visa Application: Refused' : "Visa Status: $v");
+        $vBody = $v === 'Granted' ? 'Congratulations! Your visa application has been approved and granted.' : "Your visa application status has been updated to: $v.";
+        PmsNotificationService::notify($id, null, $vTitle, $vBody, 'visa_update');
+    }
+    if (isset($in['offer']) && trim((string)$in['offer']) === 'Yes' && ($existing['offer'] ?? '') !== 'Yes') {
+        PmsNotificationService::notify($id, null, 'Offer Letter Received! 🎓', 'Congratulations! Your university offer letter has been received. Please review your portal documents.', 'offer_update');
+    }
+    if (isset($in['enrollment']) && trim((string)$in['enrollment']) === 'Yes' && ($existing['enrollment'] ?? '') !== 'Yes') {
+        PmsNotificationService::notify($id, null, 'University Enrollment Confirmed', 'Your university enrollment has been officially confirmed.', 'enrollment_update');
+    }
+    if (isset($in['docs_checklist']) && trim((string)$in['docs_checklist']) === 'Yes' && ($existing['docs_checklist'] ?? '') !== 'Yes') {
+        PmsNotificationService::notify($id, null, 'Documents Checklist Verified', 'All required onboarding documents have been verified by your processing team.', 'document_verification');
+    }
+    foreach (['installment_1' => '1st Installment', 'installment_2' => '2nd Installment', 'installment_3' => '3rd Installment', 'installment_4' => '4th Installment', 'last_installment' => 'Final Installment'] as $k => $lbl) {
+        if (isset($in[$k]) && trim((string)$in[$k]) !== '' && trim((string)$in[$k]) !== ($existing[$k] ?? '')) {
+            PmsNotificationService::notify($id, null, "Payment Record Updated: $lbl", "Your payment record for $lbl has been updated: " . trim((string)$in[$k]) . ".", 'payment_update');
+        }
+    }
+    if (isset($in['threat_cancellation']) && trim((string)$in['threat_cancellation']) !== '' && trim((string)$in['threat_cancellation']) !== ($existing['threat_cancellation'] ?? '')) {
+        PmsNotificationService::notify($id, null, 'Important Notice Regarding Your File ⚠️', "Urgent advisory: " . trim((string)$in['threat_cancellation']), 'urgent_alert');
+    }
+
     json_ok(['id' => $id], 'Student updated successfully');
 }
 
@@ -715,6 +740,20 @@ if ($rootResource === 'applications') {
 
         q("UPDATE students SET " . implode(', ', $updates) . " WHERE id = ?", $params);
         log_action('Updated application status', $id);
+
+        if (isset($in['visa']) && trim((string)$in['visa']) !== '') {
+            $v = trim((string)$in['visa']);
+            $vTitle = $v === 'Granted' ? 'Visa Granted! 🎉' : ($v === 'Refused' ? 'Visa Application: Refused' : "Visa Status: $v");
+            $vBody = $v === 'Granted' ? 'Congratulations! Your visa application has been approved and granted.' : "Your visa application status has been updated to: $v.";
+            PmsNotificationService::notify($id, null, $vTitle, $vBody, 'visa_update');
+        }
+        if (isset($in['offer']) && trim((string)$in['offer']) === 'Yes') {
+            PmsNotificationService::notify($id, null, 'Offer Letter Received! 🎓', 'Congratulations! Your university offer letter has been received. Please review your portal documents.', 'offer_update');
+        }
+        if (isset($in['enrollment']) && trim((string)$in['enrollment']) === 'Yes') {
+            PmsNotificationService::notify($id, null, 'University Enrollment Confirmed', 'Your university enrollment has been officially confirmed.', 'enrollment_update');
+        }
+
         json_ok(['id' => $id], 'Application status updated successfully');
     }
 }
@@ -814,10 +853,33 @@ if ($rootResource === 'corrections' && is_numeric($subResource) && in_array($met
         }
     }
 
-    q("UPDATE correction_requests SET status = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_at = ?, reviewer_notes = ? WHERE id = ?",
+    q("UPDATE correction_requests SET status = ?, reviewed_by = ?, reviewed_by_name = ?, reviewed_by_at = ?, reviewer_notes = ? WHERE id = ?",
         [$newStatus, $u['id'], $u['name'], now(), $notes, $corrId]);
 
     log_action("Correction #$corrId $newStatus", $corr['student_id']);
+
+    // Trigger notification to student
+    if ($action === 'approve') {
+        PmsNotificationService::notify(
+            (int)$corr['student_id'],
+            null,
+            'Correction Request Approved',
+            "Your correction request for '{$corr['field_name']}' has been approved and updated.",
+            'correction_approved',
+            $corrId
+        );
+    } else {
+        $reasonMsg = !empty($notes) ? " Reason: $notes" : "";
+        PmsNotificationService::notify(
+            (int)$corr['student_id'],
+            null,
+            'Correction Request Rejected',
+            "Your correction request for '{$corr['field_name']}' was reviewed: Rejected.{$reasonMsg}",
+            'correction_rejected',
+            $corrId
+        );
+    }
+
     json_ok(['id' => $corrId, 'status' => $newStatus], "Correction request $newStatus successfully");
 }
 
@@ -919,6 +981,18 @@ if ($rootResource === 'documents' && $subResource === 'upload' && $method === 'P
         q("INSERT INTO custom_documents (student_id, title, file_path, file_name, file_size, mime_type, created_at, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
           [$studentId, $customTitle, $relPath, $origName, $fileSize, $mimeType, now(), $u['id']]);
         log_action("Uploaded custom document: $customTitle", $studentId);
+    }
+
+    // Trigger notification if uploaded by staff for student
+    $docLabel = ($docIndex >= 0 && isset(DOCS[$docIndex])) ? DOCS[$docIndex] : ($customTitle ?: $origName);
+    if ($u['role'] !== 'student' && $studentId > 0) {
+        PmsNotificationService::notify(
+            $studentId,
+            null,
+            'New Document Uploaded',
+            "A document ({$docLabel}) has been added to your file by your processing team.",
+            'document_verification'
+        );
     }
 
     json_ok([
@@ -1261,8 +1335,8 @@ if ($rootResource === 'notifications' && ($subResource === '' || $subResource ==
     $u = require_api_user(['admin', 'officer', 'student']);
     if ($u['role'] === 'student') {
         $studentId = (int)($u['student_id'] ?? 0);
-        $rows = q("SELECT * FROM notifications WHERE student_id = ? ORDER BY created_at DESC LIMIT 100", [$studentId])->fetchAll();
-        $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE student_id = ? AND is_read = 0", [$studentId])->fetchColumn();
+        $rows = q("SELECT * FROM notifications WHERE (student_id = ? OR (student_id IS NULL AND user_id IS NULL)) ORDER BY created_at DESC LIMIT 100", [$studentId])->fetchAll();
+        $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE (student_id = ? OR (student_id IS NULL AND user_id IS NULL)) AND is_read = 0", [$studentId])->fetchColumn();
     } else {
         $userId = (int)$u['id'];
         $rows = q("SELECT * FROM notifications WHERE (user_id = ? OR (user_id IS NULL AND student_id IS NULL)) ORDER BY created_at DESC LIMIT 100", [$userId])->fetchAll();
@@ -1273,6 +1347,38 @@ if ($rootResource === 'notifications' && ($subResource === '' || $subResource ==
         'notifications' => $rows,
         'unread_count'  => $unread,
     ]);
+}
+
+// GET /api/notifications/unread-count — Fetch unread count for current user/student
+if ($rootResource === 'notifications' && ($subResource === 'unread-count' || $subResource === 'unread') && $method === 'GET') {
+    $u = require_api_user(['admin', 'officer', 'student']);
+    if ($u['role'] === 'student') {
+        $studentId = (int)($u['student_id'] ?? 0);
+        $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE (student_id = ? OR (student_id IS NULL AND user_id IS NULL)) AND is_read = 0", [$studentId])->fetchColumn();
+    } else {
+        $userId = (int)$u['id'];
+        $unread = (int)q("SELECT COUNT(*) FROM notifications WHERE (user_id = ? OR (user_id IS NULL AND student_id IS NULL)) AND is_read = 0", [$userId])->fetchColumn();
+    }
+    json_ok(['unread_count' => $unread]);
+}
+
+// GET /api/notifications/{id} — Fetch single notification detail with isolation check
+if ($rootResource === 'notifications' && is_numeric($subResource) && $method === 'GET') {
+    $u = require_api_user(['admin', 'officer', 'student']);
+    $notifId = (int)$subResource;
+    $notif = q("SELECT * FROM notifications WHERE id = ?", [$notifId])->fetch();
+    if (!$notif) json_err('Notification not found.', 404);
+
+    // Security check: student can only read their own notification or broadcast announcements
+    if ($u['role'] === 'student') {
+        $mySid = (int)($u['student_id'] ?? 0);
+        $notifSid = !empty($notif['student_id']) ? (int)$notif['student_id'] : null;
+        if ($notifSid !== null && $notifSid !== $mySid) {
+            json_err('Access denied: You are not authorized to view this notification.', 403);
+        }
+    }
+
+    json_ok(['notification' => $notif]);
 }
 
 // POST /api/notifications/read — Mark single notification as read

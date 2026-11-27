@@ -1,6 +1,7 @@
 <?php
 declare(strict_types=1);
 // Shared add/edit page for admin and officer. Expects $u.
+require_once APP . '/fcm_service.php';
 
 $admin = $u['role'] === 'admin';
 $base = $admin ? 'admin' : 'officer';
@@ -153,6 +154,98 @@ if (is_post() && post('action') === 'save') {
         if ($stRow) {
             $hasMeet = student_has_meeting($stRow);
             q("UPDATE students SET recorded_uploaded = ? WHERE id = ?", [$hasMeet ? 'Yes' : 'No', $id]);
+        }
+
+        // ---------- DISPATCH REAL-TIME PORTAL NOTIFICATIONS TO FLUTTER ----------
+        if ($isNew) {
+            PmsNotificationService::notify(
+                $id,
+                null,
+                'Welcome to ScholarshipHive! 🎓',
+                'Your student profile has been created in the PMS portal. You can now track your application stages in real time.',
+                'welcome'
+            );
+        } else {
+            // 1. Visa Status Updates
+            $oldVisa = trim((string)($r['visa'] ?? ''));
+            $newVisa = trim((string)($data['visa'] ?? ''));
+            if ($newVisa !== '' && $oldVisa !== $newVisa) {
+                if ($newVisa === 'Granted') {
+                    PmsNotificationService::notify($id, null, 'Visa Granted! 🎉', 'Congratulations! Your visa application has been approved and granted. Please check your file for departure instructions.', 'visa_update');
+                } elseif ($newVisa === 'Refused') {
+                    PmsNotificationService::notify($id, null, 'Visa Application Status: Refused', 'Your visa application status has been updated to Refused. Please contact your assigned counselor immediately.', 'visa_update');
+                } else {
+                    PmsNotificationService::notify($id, null, 'Visa Status Update', "Your visa status has been updated to: $newVisa.", 'visa_update');
+                }
+            }
+
+            // 2. Offer Letter Update
+            $oldOffer = trim((string)($r['offer'] ?? ''));
+            $newOffer = trim((string)($data['offer'] ?? ''));
+            if ($newOffer === 'Yes' && $oldOffer !== 'Yes') {
+                PmsNotificationService::notify($id, null, 'Offer Letter Received! 🎓', 'Congratulations! Your university offer letter has been received. Please review your portal documents.', 'offer_update');
+            }
+
+            // 3. University Enrollment Update
+            $oldEnroll = trim((string)($r['enrollment'] ?? ''));
+            $newEnroll = trim((string)($data['enrollment'] ?? ''));
+            if ($newEnroll === 'Yes' && $oldEnroll !== 'Yes') {
+                PmsNotificationService::notify($id, null, 'University Enrollment Confirmed', 'Your university enrollment has been officially confirmed.', 'enrollment_update');
+            }
+
+            // 4. Documents Checklist Verification
+            $oldDocsCheck = trim((string)($r['docs_checklist'] ?? ''));
+            $newDocsCheck = trim((string)($data['docs_checklist'] ?? ''));
+            if ($newDocsCheck === 'Yes' && $oldDocsCheck !== 'Yes') {
+                PmsNotificationService::notify($id, null, 'Documents Checklist Verified', 'All required onboarding documents have been verified by your processing team.', 'document_verification');
+            }
+
+            // 5. Consent Verification
+            $oldConsent = trim((string)($r['consent'] ?? ''));
+            $newConsent = trim((string)($data['consent'] ?? ''));
+            if ($newConsent === 'Yes' && $oldConsent !== 'Yes') {
+                PmsNotificationService::notify($id, null, 'Application Consent Verified', 'Your application consent form has been received and verified.', 'processing_update');
+            }
+
+            // 6. Payment & Installment Updates
+            $installments = [
+                'installment_1' => '1st Installment',
+                'installment_2' => '2nd Installment',
+                'installment_3' => '3rd Installment',
+                'installment_4' => '4th Installment',
+                'last_installment' => 'Final Installment'
+            ];
+            foreach ($installments as $k => $lbl) {
+                $oldInst = trim((string)($r[$k] ?? ''));
+                $newInst = trim((string)($data[$k] ?? ''));
+                if ($newInst !== '' && $oldInst !== $newInst) {
+                    PmsNotificationService::notify($id, null, "Payment Record Updated: $lbl", "Your payment record for $lbl has been updated: $newInst.", 'payment_update');
+                }
+            }
+
+            // 7. Processing Officer Reassignment
+            $oldOfficer = (int)($r['officer_id'] ?? 0);
+            $newOfficer = (int)($data['officer_id'] ?? 0);
+            if ($newOfficer > 0 && $oldOfficer !== $newOfficer) {
+                $offName = $officerMap[$newOfficer] ?? 'Processing Officer';
+                PmsNotificationService::notify($id, null, 'Processing Officer Assigned', "Your application has been assigned to processing officer $offName.", 'processing_update');
+            }
+
+            // 8. Follow-up Deadlines
+            foreach (['follow_up_1', 'follow_up_2', 'follow_up_3'] as $fKey) {
+                $oldFollow = trim((string)($r[$fKey] ?? ''));
+                $newFollow = trim((string)($data[$fKey] ?? ''));
+                if ($newFollow !== '' && $oldFollow !== $newFollow) {
+                    PmsNotificationService::notify($id, null, 'Follow-up Deadline Scheduled', "A follow-up deadline has been scheduled for your application on " . fmt_date($newFollow), 'deadline_reminder');
+                }
+            }
+
+            // 9. Threat of Cancellation Warning
+            $oldThreat = trim((string)($r['threat_cancellation'] ?? ''));
+            $newThreat = trim((string)($data['threat_cancellation'] ?? ''));
+            if ($newThreat !== '' && $oldThreat !== $newThreat) {
+                PmsNotificationService::notify($id, null, 'Important Notice Regarding Your File ⚠️', "Urgent advisory: $newThreat", 'urgent_alert');
+            }
         }
 
         flash($isNew ? 'Student added.' : 'Changes saved.');

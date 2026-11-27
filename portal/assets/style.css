@@ -201,6 +201,52 @@ button, input, select, textarea { font: inherit; color: inherit; }
   :root:not([data-theme="light"]) .theme-toggle .icon-moon { display: none; }
 }
 
+/* Notification Bell Button */
+.notif-bell-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg);
+  text-decoration: none;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+  user-select: none;
+  flex-shrink: 0;
+}
+.notif-bell-btn:hover {
+  border-color: var(--accent);
+  background: var(--sunk);
+  color: var(--accent);
+}
+.notif-bell-icon {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+}
+.notif-bell-badge {
+  position: absolute;
+  top: -4px;
+  right: -5px;
+  background: #dc2626;
+  color: #ffffff;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 2.5px 5px;
+  border-radius: 99px;
+  border: 1.5px solid var(--bg);
+  min-width: 15px;
+  text-align: center;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+}
+
 /* Guest top utility bar for login / portal selection pages */
 .guest-topbar {
   display: flex;

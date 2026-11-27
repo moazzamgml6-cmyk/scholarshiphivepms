@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/app/bootstrap.php';
 require_once __DIR__ . '/app/stages.php';
+require_once __DIR__ . '/app/fcm_service.php';
 
 $u = current_user();
 if (!$u) {
@@ -133,10 +134,13 @@ if ($docIndex >= 0 && isset(DOCS[$docIndex])) {
     // Auto sync student stage if relevant document was uploaded
     if ($docIndex === 9) {
         q("UPDATE students SET offer = 'Yes', updated_at = ? WHERE id = ?", [now(), $studentId]);
+        PmsNotificationService::notify($studentId, null, 'Offer Letter Received! 🎓', 'Your university offer letter document has been uploaded and registered.', 'offer_update');
     } elseif ($docIndex === 10) {
         q("UPDATE students SET enrollment = 'Yes', updated_at = ? WHERE id = ?", [now(), $studentId]);
+        PmsNotificationService::notify($studentId, null, 'University Enrollment Confirmed', 'Your university enrollment document has been uploaded and verified.', 'enrollment_update');
     } elseif ($docIndex === 11) {
         q("UPDATE students SET visa = 'Granted', updated_at = ? WHERE id = ?", [now(), $studentId]);
+        PmsNotificationService::notify($studentId, null, 'Visa Granted! 🎉', 'Your visa grant document has been verified. Congratulations!', 'visa_update');
     }
     log_action("Uploaded document: {$docName}", $studentId);
     flash("Document '{$docName}' uploaded successfully!", 'ok');
